@@ -163,7 +163,6 @@ public class PlaybackService extends Service {
             return;
         }
         if (mp != null && !mp.isPlaying()) {
-            // Riavvolge 3 secondi alla ripresa per non perdere il filo del discorso
             int pos = Math.max(0, mp.getCurrentPosition() - 3000);
             if (currentBook != null) {
                 BookModel.Chapter ch = currentBook.chapters.get(currentChapterIdx);
@@ -233,7 +232,6 @@ public class PlaybackService extends Service {
         else if (speed < 1.65f) speed = 1.75f;
         else if (speed < 1.9f) speed = 2.0f;
         else speed = 0.8f;
-
         getSharedPreferences("wb_prefs", MODE_PRIVATE).edit().putFloat("speed", speed).apply();
         applySpeedInternal();
     }
@@ -249,140 +247,11 @@ public class PlaybackService extends Service {
 
     public void cycleSleepTimer() {
         long now = System.currentTimeMillis();
-        if (sleepEndEpochMs == 0 && !sleepEndOfChapter) {
-            sleepEndEpochMs = now + 15 * 60_000L;
-        } else if (sleepEndEpochMs > 0 && (sleepEndEpochMs - now) <= 16 * 60_000L) {
-            sleepEndEpochMs = now + 30 * 60_000L;
-        } else if (sleepEndEpochMs > 0 && (sleepEndEpochMs - now) <= 31 * 60_000L) {
-            sleepEndEpochMs = now + 45 * 60_000L;
-        } else if (sleepEndEpochMs > 0) {
-            sleepEndEpochMs = 0;
-            sleepEndOfChapter = true;
-        } else {
-            sleepEndEpochMs = 0;
-            sleepEndOfChapter = false;
-        }
-    }
-
-    public String getSleepLabel() {
-        if (sleepEndOfChapter) return "Fine cap.";
-        if (sleepEndEpochMs > 0) {
-            long remMin = Math.max(1, (sleepEndEpochMs - System.currentTimeMillis() + 59999) / 60000);
-            return remMin + "m";
-        }
-        return "Zzz";
-    }
-
-    private void checkChapterAndSleep() {
-        if (mp == null || currentBook == null) return;
-        BookModel.Chapter ch = currentBook.chapters.get(currentChapterIdx);
-        long filePos = mp.getCurrentPosition();
-
-        // Avanzamento automatico al capitolo successivo nei file M4B unici
-        if (ch.durationMs > 0 && filePos >= ch.startMs + ch.durationMs - 250) {
-            if (sleepEndOfChapter) {
-                sleepEndOfChapter = false;
-                if (currentChapterIdx + 1 < currentBook.chapters.size()) {
-                    loadBookChapter(currentBook, currentChapterIdx + 1, 0, false);
-                } else {
-                    pause();
-                }
-                return;
-            }
-            if (currentChapterIdx + 1 < currentBook.chapters.size()) {
-                currentChapterIdx++;
-                saveProgress();
-                updateNotification();
-            }
-        }
-
-        if (sleepEndEpochMs > 0) {
-            long left = sleepEndEpochMs - System.currentTimeMillis();
-            if (left <= 0) {
-                sleepEndEpochMs = 0;
-                pause();
-            } else if (left < 10_000L) {
-                float vol = Math.max(0.1f, left / 10_000f);
-                mp.setVolume(vol, vol);
-            }
-        }
-    }
-
-    public void saveProgress() {
-        if (currentBook == null) return;
-        SharedPreferences.Editor ed = getSharedPreferences("wb_progress", MODE_PRIVATE).edit();
-        ed.putInt(currentBook.id + "_ch", currentChapterIdx);
-        ed.putLong(currentBook.id + "_pos", getChapterPosMs());
-        ed.putString("last_book_id", currentBook.id);
-        ed.apply();
-    }
-
-    private void releasePlayer() {
-        if (mp != null) {
-            try { mp.stop(); } catch (Exception ignored) {}
-            try { mp.release(); } catch (Exception ignored) {}
-            mp = null;
-        }
-        loadedFilePath = "";
-    }
-
-    @Override
-    public void onDestroy() {
-        saveProgress();
-        handler.removeCallbacks(ticker);
-        releasePlayer();
-        if (mediaSession != null) mediaSession.release();
-        super.onDestroy();
-    }
-
-    @Override
-    public IBinder onBind(Intent intent) { return binder; }
-}
-
-    public long getChapterPosMs() {
-        if (mp == null || currentBook == null) return 0;
-        try {
-            BookModel.Chapter ch = currentBook.chapters.get(currentChapterIdx);
-            return Math.max(0, mp.getCurrentPosition() - ch.startMs);
-        } catch (Exception e) { return 0; }
-    }
-
-    public void cycleSpeed() {
-        if (speed < 0.9f) speed = 1.0f;
-        else if (speed < 1.1f) speed = 1.2f;
-        else if (speed < 1.35f) speed = 1.5f;
-        else if (speed < 1.65f) speed = 1.75f;
-        else if (speed < 1.9f) speed = 2.0f;
-        else speed = 0.8f;
-
-        getSharedPreferences("wb_prefs", MODE_PRIVATE).edit().putFloat("speed", speed).apply();
-        applySpeedInternal();
-    }
-
-    private void applySpeedInternal() {
-        if (mp == null) return;
-        try {
-            boolean wasPlaying = mp.isPlaying();
-            mp.setPlaybackParams(mp.getPlaybackParams().setSpeed(speed));
-            if (!wasPlaying) mp.pause();
-        } catch (Exception ignored) {}
-    }
-
-    public void cycleSleepTimer() {
-        long now = System.currentTimeMillis();
-        if (sleepEndEpochMs == 0 && !sleepEndOfChapter) {
-            sleepEndEpochMs = now + 15 * 60_000L;
-        } else if (sleepEndEpochMs > 0 && (sleepEndEpochMs - now) <= 16 * 60_000L) {
-            sleepEndEpochMs = now + 30 * 60_000L;
-        } else if (sleepEndEpochMs > 0 && (sleepEndEpochMs - now) <= 31 * 60_000L) {
-            sleepEndEpochMs = now + 45 * 60_000L;
-        } else if (sleepEndEpochMs > 0) {
-            sleepEndEpochMs = 0;
-            sleepEndOfChapter = true;
-        } else {
-            sleepEndEpochMs = 0;
-            sleepEndOfChapter = false;
-        }
+        if (sleepEndEpochMs == 0 && !sleepEndOfChapter) sleepEndEpochMs = now + 15 * 60_000L;
+        else if (sleepEndEpochMs > 0 && (sleepEndEpochMs - now) <= 16 * 60_000L) sleepEndEpochMs = now + 30 * 60_000L;
+        else if (sleepEndEpochMs > 0 && (sleepEndEpochMs - now) <= 31 * 60_000L) sleepEndEpochMs = now + 45 * 60_000L;
+        else if (sleepEndEpochMs > 0) { sleepEndEpochMs = 0; sleepEndOfChapter = true; }
+        else { sleepEndEpochMs = 0; sleepEndOfChapter = false; }
     }
 
     public String getSleepLabel() {
