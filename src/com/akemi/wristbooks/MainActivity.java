@@ -603,3 +603,285 @@ public class MainActivity extends Activity {
         uiHandler.post(playerRefreshTask);
     }
 }
+
+    private void renderBookmarksList(final BookModel.Book book) {
+        try {
+            String raw = getSharedPreferences("wb_notes", MODE_PRIVATE).getString(book.id, "[]");
+            JSONArray arr = new JSONArray(raw);
+            if (arr.length() == 0) {
+                ui.text(ui.box, "Nessun segnalibro salvato.\nUsa 🔖 nel player per salvare un punto.", 12f, "#94A3B8", false);
+                return;
+            }
+            for (int i = arr.length() - 1; i >= 0; i--) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) continue;
+                final int ch = o.optInt("ch", 0);
+                final long pos = o.optLong("pos", 0);
+                LinearLayout c = ui.card();
+                ui.text(c, o.optString("label", "Segnalibro"), 12.5f, "#38BDF8", true);
+                ui.text(c, "Cap. " + (ch + 1) + " • " + BookModel.fmtChapterTime(pos), 11f, "#94A3B8", false);
+                c.setOnClickListener(v -> {
+                    if (svc != null) svc.loadBookChapter(book, ch, pos, true);
+                    showPlayer();
+                });
+                ui.box.addView(c);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void addBookmarkNow() {
+        if (svc == null || svc.currentBook == null) return;
+        try {
+            SharedPreferences sp = getSharedPreferences("wb_notes", MODE_PRIVATE);
+            JSONArray arr = new JSONArray(sp.getString(svc.currentBook.id, "[]"));
+            BookModel.Chapter ch = svc.currentBook.chapters.get(svc.currentChapterIdx);
+            JSONObject o = new JSONObject();
+            o.put("ch", svc.currentChapterIdx);
+            o.put("pos", svc.getChapterPosMs());
+            o.put("label", ch.title);
+            arr.put(o);
+            sp.edit().putString(svc.currentBook.id, arr.toString()).apply();
+            Toast.makeText(this, "Segnalibro salvato!", Toast.LENGTH_SHORT).show();
+        } catch (Exception ignored) {}
+    }
+
+    // ==================== 3. PLAYER AUDIOLIBRO (UI OTTIMIZZATA) ====================
+
+    private void showPlayer() {
+        screenMode = 2;
+        uiHandler.removeCallbacksAndMessages(null);
+        ui.clear();
+
+        final BookModel.Book book = (svc != null && svc.currentBook != null) ? svc.currentBook : selectedBook;
+        if (book == null) { showLibrary(); return; }
+
+        // Header compatto come nella foto: mini copertina + titolo/autore + icona lista capitoli + segnalibro
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+
+        ImageView miniCover = new ImageView(this);
+        int mcSz = ui.dp(34);
+        miniCover.setLayoutParams(new LinearLayout.LayoutParams(mcSz, mcSz));
+        miniCover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        if (book.cover != null) miniCover.setImageBitmap(book.cover);
+        else miniCover.setBackground(ui.roundBox("#1F2430", "#EF4444", 8));
+        top.addView(miniCover);
+
+        LinearLayout titles = new LinearLayout(this);
+        titles.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        tlp.leftMargin = ui.dp(8);
+        tlp.rightMargin = ui.dp(4);
+        titles.setLayoutParams(tlp);
+
+        final TextView tvBookTitle = ui.text(titles, book.title, 12f, "#F8FAFC", true);
+        tvBookTitle.setMaxLines(1);
+        tvBookTitle.setEllipsize(TextUtils.TruncateAt.END);
+        TextView tvAuthor = ui.text(titles, book.author, 10.5f, "#94A3B8", false);
+        tvAuthor.setMaxLines(1);
+        tvAuthor.setEllipsize(TextUtils.TruncateAt.END);
+        top.addView(titles);
+
+        Button bNote = ui.chip("🔖", "#181B22", "#272C37", "#2E3442", "#FBBF24", 11f);
+        bNote.setOnClickListener(v -> addBookmarkNow());
+        top.addView(bNote);
+
+        Button bList = ui.chip("☰", "#181B22", "#272C37", "#2E3442", "#FFFFFF", 12f);
+        LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        llp.leftMargin = ui.dp(4);
+        bList.setLayoutParams(llp);
+        bList.setOnClickListener(v -> showChapters(book, false));
+        top.addView(bList);
+        ui.box.addView(top);
+
+        // Barra rossa avanzamento globale del libro + tempi (trascorso | cap X/Y | -rimanente)
+        final ProgressBar bookProg = ui.makeRedBookProgress();
+        LinearLayout.LayoutParams bplp = (LinearLayout.LayoutParams) bookProg.getLayoutParams();
+        bplp.topMargin = ui.dp(10);
+        ui.box.addView(bookProg);
+
+        LinearLayout bookTimes = new LinearLayout(this);
+        bookTimes.setOrientation(LinearLayout.HORIZONTAL);
+        final TextView tvBookEl = new TextView(this);
+        tvBookEl.setTextColor(Color.parseColor("#94A3B8"));
+        tvBookEl.setTextSize(10f);
+        tvBookEl.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        final TextView tvChapCount = new TextView(this);
+        tvChapCount.setTextColor(Color.parseColor("#CBD5E1"));
+        tvChapCount.setTextSize(10.5f);
+        tvChapCount.setTypeface(null, Typeface.BOLD);
+        tvChapCount.setGravity(Gravity.CENTER);
+        tvChapCount.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        final TextView tvBookRem = new TextView(this);
+        tvBookRem.setTextColor(Color.parseColor("#94A3B8"));
+        tvBookRem.setTextSize(10f);
+        tvBookRem.setGravity(Gravity.END);
+        tvBookRem.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        bookTimes.addView(tvBookEl);
+        bookTimes.addView(tvChapCount);
+        bookTimes.addView(tvBookRem);
+        ui.box.addView(bookTimes);
+
+        // Titolo capitolo corrente al centro (come il "12" nello screenshot)
+        final TextView tvChapTitle = new TextView(this);
+        tvChapTitle.setTextColor(Color.WHITE);
+        tvChapTitle.setTextSize(14f);
+        tvChapTitle.setTypeface(null, Typeface.BOLD);
+        tvChapTitle.setGravity(Gravity.CENTER);
+        tvChapTitle.setMaxLines(2);
+        tvChapTitle.setEllipsize(TextUtils.TruncateAt.END);
+        tvChapTitle.setPadding(0, ui.dp(10), 0, ui.dp(4));
+        ui.box.addView(tvChapTitle);
+
+        // SeekBar rossa del capitolo + tempi (trascorso | -rimanente)
+        final SeekBar seekBar = ui.makeRedSeekBar();
+        ui.box.addView(seekBar);
+
+        LinearLayout chapTimes = new LinearLayout(this);
+        chapTimes.setOrientation(LinearLayout.HORIZONTAL);
+        final TextView tvChapEl = new TextView(this);
+        tvChapEl.setTextColor(Color.parseColor("#94A3B8"));
+        tvChapEl.setTextSize(10.5f);
+        tvChapEl.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        final TextView tvChapRem = new TextView(this);
+        tvChapRem.setTextColor(Color.parseColor("#94A3B8"));
+        tvChapRem.setTextSize(10.5f);
+        tvChapRem.setGravity(Gravity.END);
+        tvChapRem.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        chapTimes.addView(tvChapEl);
+        chapTimes.addView(tvChapRem);
+        ui.box.addView(chapTimes);
+
+        // Controlli principali: -15s | PLAY/PAUSA grande | +15s
+        LinearLayout mainCtrl = new LinearLayout(this);
+        mainCtrl.setOrientation(LinearLayout.HORIZONTAL);
+        mainCtrl.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams mclp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        mclp.topMargin = ui.dp(8);
+        mainCtrl.setLayoutParams(mclp);
+
+        Button bRew = ui.chip("-15s", "#14171F", "#242936", "#2E3442", "#F8FAFC", 12f);
+        bRew.setOnClickListener(v -> { if (svc != null) svc.skipSeconds(-15); });
+
+        final Button bPlay = new Button(this);
+        int playSz = ui.dp(54);
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(playSz, playSz);
+        plp.leftMargin = ui.dp(12);
+        plp.rightMargin = ui.dp(12);
+        bPlay.setLayoutParams(plp);
+        bPlay.setBackground(ui.pillBg("#1E222D", "#2E3444", "#3B4254"));
+        bPlay.setTextColor(Color.parseColor("#EF4444"));
+        bPlay.setTextSize(20f);
+        bPlay.setOnClickListener(v -> { if (svc != null) svc.togglePlayPause(); });
+
+        Button bFwd = ui.chip("+15s", "#14171F", "#242936", "#2E3442", "#F8FAFC", 12f);
+        bFwd.setOnClickListener(v -> { if (svc != null) svc.skipSeconds(15); });
+
+        mainCtrl.addView(bRew);
+        mainCtrl.addView(bPlay);
+        mainCtrl.addView(bFwd);
+        ui.box.addView(mainCtrl);
+
+        // Barra inferiore: Velocità (1.0×) | Sleep Timer (Zzz)
+        LinearLayout subCtrl = new LinearLayout(this);
+        subCtrl.setOrientation(LinearLayout.HORIZONTAL);
+        subCtrl.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams sclp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        sclp.topMargin = ui.dp(8);
+        subCtrl.setLayoutParams(sclp);
+
+        final Button bSpeed = ui.chip("1.0×", "#14171F", "#242936", "#2E3442", "#F8FAFC", 11.5f);
+        bSpeed.setOnClickListener(v -> {
+            if (svc != null) {
+                svc.cycleSpeed();
+                bSpeed.setText(String.format(java.util.Locale.US, "%.2g×", svc.speed));
+            }
+        });
+
+        final Button bSleep = ui.chip("Zzz", "#14171F", "#242936", "#2E3442", "#94A3B8", 11.5f);
+        LinearLayout.LayoutParams zlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        zlp.leftMargin = ui.dp(14);
+        bSleep.setLayoutParams(zlp);
+        bSleep.setOnClickListener(v -> {
+            if (svc != null) {
+                svc.cycleSleepTimer();
+                bSleep.setText(svc.getSleepLabel());
+                bSleep.setTextColor(Color.parseColor("Zzz".equals(svc.getSleepLabel()) ? "#94A3B8" : "#EF4444"));
+            }
+        });
+
+        subCtrl.addView(bSpeed);
+        subCtrl.addView(bSleep);
+        ui.box.addView(subCtrl);
+
+        seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+                if (fromUser && svc != null && svc.currentBook != null) {
+                    BookModel.Chapter ch = svc.currentBook.chapters.get(svc.currentChapterIdx);
+                    long preview = (ch.durationMs * progress) / 1000L;
+                    tvChapEl.setText(BookModel.fmtChapterTime(preview));
+                    tvChapRem.setText("-" + BookModel.fmtChapterTime(Math.max(0, ch.durationMs - preview)));
+                }
+            }
+            @Override public void onStartTrackingTouch(SeekBar sb) { userScrubbing = true; }
+            @Override
+            public void onStopTrackingTouch(SeekBar sb) {
+                userScrubbing = false;
+                if (svc != null && svc.currentBook != null) {
+                    BookModel.Chapter ch = svc.currentBook.chapters.get(svc.currentChapterIdx);
+                    svc.seekChapterTo((ch.durationMs * sb.getProgress()) / 1000L);
+                }
+            }
+        });
+
+        playerRefreshTask = new Runnable() {
+            @Override
+            public void run() {
+                if (screenMode != 2) return;
+                if (svc != null && svc.currentBook != null) {
+                    BookModel.Book b = svc.currentBook;
+                    int cIdx = svc.currentChapterIdx;
+                    BookModel.Chapter ch = b.chapters.get(cIdx);
+                    long chPos = svc.getChapterPosMs();
+                    long chDur = Math.max(1, ch.durationMs);
+
+                    tvChapTitle.setText(ch.title);
+                    tvChapCount.setText((cIdx + 1) + "/" + b.chapters.size());
+
+                    long bookEl = b.getElapsedBookMs(cIdx, chPos);
+                    long bookRem = Math.max(0, b.totalDurationMs - bookEl);
+                    tvBookEl.setText(BookModel.fmtBookHours(bookEl));
+                    tvBookRem.setText("-" + BookModel.fmtBookHours(bookRem));
+                    if (b.totalDurationMs > 0) {
+                        bookProg.setProgress((int) ((bookEl * 1000L) / b.totalDurationMs));
+                    }
+
+                    if (!userScrubbing) {
+                        seekBar.setProgress((int) Math.min(1000, (chPos * 1000L) / chDur));
+                        tvChapEl.setText(BookModel.fmtChapterTime(chPos));
+                        tvChapRem.setText("-" + BookModel.fmtChapterTime(Math.max(0, ch.durationMs - chPos)));
+                    }
+
+                    bPlay.setText(svc.isPlaying() ? "❚❚" : "▶");
+                    bSpeed.setText(String.format(java.util.Locale.US, "%.2g×", svc.speed));
+                    String sl = svc.getSleepLabel();
+                    bSleep.setText(sl);
+                    bSleep.setTextColor(Color.parseColor("Zzz".equals(sl) ? "#94A3B8" : "#EF4444"));
+                }
+                uiHandler.postDelayed(this, 500);
+            }
+        };
+        uiHandler.post(playerRefreshTask);
+    }
+}
