@@ -45,7 +45,7 @@ public class WatchUi {
         scroll.setFocusableInTouchMode(true);
 
         int side = Math.max(dp(18), Math.round(widthPx * 0.11f));
-        int top = Math.max(dp(28), Math.round(dm.heightPixels * 0.13f));
+        int top = Math.max(dp(26), Math.round(dm.heightPixels * 0.12f));
         int bot = Math.max(dp(44), Math.round(dm.heightPixels * 0.20f));
 
         box = new LinearLayout(act);
@@ -111,7 +111,9 @@ public class WatchUi {
         b.setTypeface(null, Typeface.BOLD);
         b.setTextColor(Color.parseColor(fg));
         b.setBackground(pillBg(norm, press, stroke));
-        b.setPadding(dp(10), dp(6), dp(10), dp(6));
+        b.setPadding(dp(8), dp(4), dp(8), dp(4));
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
         b.setMinHeight(0);
         b.setMinimumHeight(0);
         return b;
@@ -131,8 +133,10 @@ public class WatchUi {
         ProgressBar pb = new ProgressBar(act, null, android.R.attr.progressBarStyleHorizontal);
         pb.setMax(1000);
         pb.setProgressDrawable(makeRedBarDrawable(dp(3)));
+        pb.setMinimumHeight(dp(3));
+        pb.setMaxHeight(dp(3));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(4));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(3));
         lp.setMargins(0, dp(4), 0, dp(4));
         pb.setLayoutParams(lp);
         return pb;
@@ -141,13 +145,16 @@ public class WatchUi {
     public SeekBar makeRedSeekBar() {
         SeekBar sb = new SeekBar(act);
         sb.setMax(1000);
+        sb.setSplitTrack(false);
         sb.setProgressDrawable(makeRedBarDrawable(dp(4)));
+        sb.setMinimumHeight(dp(16));
+        sb.setMaxHeight(dp(16));
         GradientDrawable thumb = new GradientDrawable();
         thumb.setShape(GradientDrawable.OVAL);
         thumb.setColor(Color.parseColor("#EF4444"));
-        thumb.setSize(dp(14), dp(14));
+        thumb.setSize(dp(12), dp(12));
         sb.setThumb(thumb);
-        sb.setPadding(dp(8), dp(6), dp(8), dp(6));
+        sb.setPadding(dp(6), dp(2), dp(6), dp(2));
         return sb;
     }
 
@@ -164,6 +171,10 @@ public class WatchUi {
         LayerDrawable ld = new LayerDrawable(new Drawable[]{bg, clip});
         ld.setId(0, android.R.id.background);
         ld.setId(1, android.R.id.progress);
+        ld.setLayerHeight(0, heightPx);
+        ld.setLayerHeight(1, heightPx);
+        ld.setLayerGravity(0, Gravity.CENTER_VERTICAL);
+        ld.setLayerGravity(1, Gravity.CENTER_VERTICAL);
         return ld;
     }
 }
