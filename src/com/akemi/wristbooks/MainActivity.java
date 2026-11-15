@@ -8,13 +8,16 @@ import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.provider.OpenableColumns;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -26,6 +29,9 @@ import android.widget.ProgressBar;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -34,6 +40,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 public class MainActivity extends Activity {
+    private static final int REQ_IMPORT_BOOK = 55;
     private WatchUi ui;
     private PlaybackService svc;
     private boolean bound = false;
@@ -83,6 +90,51 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    public void onRequestPermissionsResult(int reqCode, String[] perms, int[] res) {
+        super.onRequestPermissionsResult(reqCode, perms, res);
+        refreshLibrary();
+    }
+
+    @Override
+    protected void onActivityResult(int reqCode, int resCode, Intent data) {
+        super.onActivityResult(reqCode, resCode, data);
+        if (reqCode == REQ_IMPORT_BOOK && resCode == RESULT_OK && data != null && data.getData() != null) {
+            importAudioUri(data.getData());
+        }
+    }
+
+    private void importAudioUri(final Uri uri) {
+        Toast.makeText(this, "Importazione audiolibro...", Toast.LENGTH_SHORT).show();
+        pool.execute(() -> {
+            try {
+                String name = "audiolibro.m4b";
+                try (Cursor c = getContentResolver().query(uri, null, null, null, null)) {
+                    if (c != null && c.moveToFirst()) {
+                        int idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                        if (idx >= 0) name = c.getString(idx);
+                    }
+                }
+                File destDir = getExternalFilesDir("Audiobooks");
+                if (destDir != null && !destDir.exists()) destDir.mkdirs();
+                File outF = new File(destDir, name);
+                try (InputStream is = getContentResolver().openInputStream(uri);
+                     FileOutputStream fos = new FileOutputStream(outF)) {
+                    byte[] buf = new byte[16384];
+                    int n;
+                    while ((n = is.read(buf)) != -1) fos.write(buf, 0, n);
+                }
+                library = M4bParser.scanLibrary(this);
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "Importato!", Toast.LENGTH_SHORT).show();
+                    showLibrary();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(this, "Errore: " + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        });
+    }
+
+    @Override
     public boolean dispatchGenericMotionEvent(MotionEvent ev) {
         if (ui != null && ui.onRotary(ev)) return true;
         return super.dispatchGenericMotionEvent(ev);
@@ -113,7 +165,7 @@ public class MainActivity extends Activity {
         uiHandler.removeCallbacksAndMessages(null);
         ui.clear();
         ui.text(ui.box, "WristBooks", 16f, "#EF4444", true).setGravity(Gravity.CENTER);
-        final TextView ld = ui.text(ui.box, "Scansione /sdcard/Audiobooks...", 12f, "#94A3B8", false);
+        final TextView ld = ui.text(ui.box, "Scansione Audiobooks...", 12f, "#94A3B8", false);
         ld.setGravity(Gravity.CENTER);
 
         pool.execute(() -> {
@@ -133,23 +185,36 @@ public class MainActivity extends Activity {
         TextView title = new TextView(this);
         title.setText("Audiolibri");
         title.setTextColor(Color.WHITE);
-        title.setTextSize(16f);
+        title.setTextSize(15f);
         title.setTypeface(null, Typeface.BOLD);
         hdr.addView(title);
 
         Button bScan = ui.chip("↻", "#181B22", "#272C37", "#2E3442", "#EF4444", 12f);
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        slp.leftMargin = ui.dp(10);
+        slp.leftMargin = ui.dp(8);
         bScan.setLayoutParams(slp);
         bScan.setOnClickListener(v -> refreshLibrary());
         hdr.addView(bScan);
+
+        Button bAdd = ui.chip("+", "#181B22", "#272C37", "#2E3442", "#34D399", 12f);
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        alp.leftMargin = ui.dp(6);
+        bAdd.setLayoutParams(alp);
+        bAdd.setOnClickListener(v -> {
+            Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            pick.addCategory(Intent.CATEGORY_OPENABLE);
+            pick.setType("*/*");
+            startActivityForResult(pick, REQ_IMPORT_BOOK);
+        });
+        hdr.addView(bAdd);
         ui.box.addView(hdr);
 
         if (library.isEmpty()) {
             LinearLayout empty = ui.card();
             ui.text(empty, "Nessun audiolibro trovato", 13f, "#F8FAFC", true);
-            ui.text(empty, "Copia file .m4b o cartelle .mp3 in:\n/sdcard/Audiobooks", 11.5f, "#94A3B8", false);
+            ui.text(empty, "Usa '+' qui sopra oppure copia .m4b/.mp3 in /sdcard/Audiobooks e premi ↻.", 11.5f, "#94A3B8", false);
             ui.box.addView(empty);
             return;
         }
@@ -265,10 +330,7 @@ public class MainActivity extends Activity {
         tabs.addView(tNote);
         ui.box.addView(tabs);
 
-        if (showNotesTab) {
-            renderBookmarksList(book);
-            return;
-        }
+        if (showNotesTab) { renderBookmarksList(book); return; }
 
         for (int i = 0; i < book.chapters.size(); i++) {
             final int idx = i;
