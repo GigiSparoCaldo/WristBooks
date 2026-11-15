@@ -76,7 +76,6 @@ public class MainActivity extends Activity {
             requestPermissions(new String[]{Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE}, 10);
         }
         Intent it = new Intent(this, PlaybackService.class);
-        startService(it);
         bindService(it, conn, Context.BIND_AUTO_CREATE);
     }
 
