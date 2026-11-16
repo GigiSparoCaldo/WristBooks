@@ -11,11 +11,13 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
+import android.graphics.drawable.Icon;
 import android.media.AudioAttributes;
 import android.media.AudioDeviceCallback;
 import android.media.AudioDeviceInfo;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
+import android.media.MediaMetadata;
 import android.media.MediaPlayer;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
@@ -56,6 +58,7 @@ public class PlaybackService extends Service {
             checkChapterAndSleep();
             if (isPlaying()) {
                 saveProgress();
+                updatePlaybackState();
                 handler.postDelayed(this, 1000);
             }
         }
@@ -70,6 +73,12 @@ public class PlaybackService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && intent.getAction() != null) {
+            String act = intent.getAction();
+            if ("WB_REW".equals(act)) skipSeconds(-15);
+            else if ("WB_PAUSE".equals(act)) pause();
+            else if ("WB_FWD".equals(act)) skipSeconds(15);
+        }
         return START_NOT_STICKY;
     }
 
@@ -81,6 +90,7 @@ public class PlaybackService extends Service {
                 @Override public void onPause() { pause(); }
                 @Override public void onSkipToNext() { skipSeconds(15); }
                 @Override public void onSkipToPrevious() { skipSeconds(-15); }
+                @Override public void onSeekTo(long pos) { seekChapterTo(pos); }
             });
             mediaSession.setActive(true);
         }
@@ -132,30 +142,49 @@ public class PlaybackService extends Service {
     }
 
     private void promoteForeground() {
-        if (currentBook == null) return;
+        if (currentBook == null || mediaSession == null) return;
         BookModel.Chapter ch = currentBook.chapters.get(currentChapterIdx);
+
+        MediaMetadata.Builder mb = new MediaMetadata.Builder()
+                .putString(MediaMetadata.METADATA_KEY_TITLE, ch.title)
+                .putString(MediaMetadata.METADATA_KEY_ARTIST, currentBook.author)
+                .putString(MediaMetadata.METADATA_KEY_ALBUM, currentBook.title)
+                .putLong(MediaMetadata.METADATA_KEY_DURATION, ch.durationMs);
+        if (currentBook.cover != null) mb.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, currentBook.cover);
+        mediaSession.setMetadata(mb.build());
+        updatePlaybackState();
+
         Intent open = new Intent(this, MainActivity.class);
         PendingIntent pi = PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent piRew = PendingIntent.getService(this, 1, new Intent(this, PlaybackService.class).setAction("WB_REW"), PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent piPause = PendingIntent.getService(this, 2, new Intent(this, PlaybackService.class).setAction("WB_PAUSE"), PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent piFwd = PendingIntent.getService(this, 3, new Intent(this, PlaybackService.class).setAction("WB_FWD"), PendingIntent.FLAG_IMMUTABLE);
 
         if (Build.VERSION.SDK_INT >= 26) {
             Notification n = new Notification.Builder(this, "wb_play")
-                    .setContentTitle(currentBook.title)
-                    .setContentText(ch.title)
+                    .setContentTitle(ch.title)
+                    .setContentText(currentBook.title)
                     .setSmallIcon(android.R.drawable.ic_media_play)
                     .setContentIntent(pi)
+                    .addAction(new Notification.Action.Builder(Icon.createWithResource(this, android.R.drawable.ic_media_rew), "-15s", piRew).build())
+                    .addAction(new Notification.Action.Builder(Icon.createWithResource(this, android.R.drawable.ic_media_pause), "Pausa", piPause).build())
+                    .addAction(new Notification.Action.Builder(Icon.createWithResource(this, android.R.drawable.ic_media_ff), "+15s", piFwd).build())
+                    .setStyle(new Notification.MediaStyle().setMediaSession(mediaSession.getSessionToken()).setShowActionsInCompactView(0, 1, 2))
                     .setOngoing(true)
                     .build();
             if (Build.VERSION.SDK_INT >= 29) startForeground(202, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
             else startForeground(202, n);
         }
-        if (mediaSession != null) {
-            PlaybackState ps = new PlaybackState.Builder()
-                    .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_PLAY_PAUSE
-                            | PlaybackState.ACTION_SKIP_TO_NEXT | PlaybackState.ACTION_SKIP_TO_PREVIOUS)
-                    .setState(PlaybackState.STATE_PLAYING, getChapterPosMs(), speed)
-                    .build();
-            mediaSession.setPlaybackState(ps);
-        }
+    }
+
+    private void updatePlaybackState() {
+        if (mediaSession == null) return;
+        PlaybackState ps = new PlaybackState.Builder()
+                .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_PLAY_PAUSE
+                        | PlaybackState.ACTION_SKIP_TO_NEXT | PlaybackState.ACTION_SKIP_TO_PREVIOUS | PlaybackState.ACTION_SEEK_TO)
+                .setState(PlaybackState.STATE_PLAYING, getChapterPosMs(), speed)
+                .build();
+        mediaSession.setPlaybackState(ps);
     }
 
     private boolean hasBluetoothAudio() {
@@ -248,11 +277,8 @@ public class PlaybackService extends Service {
     private void abandonAudioFocus() {
         AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
         if (am == null) return;
-        if (Build.VERSION.SDK_INT >= 26 && focusRequest != null) {
-            am.abandonAudioFocusRequest(focusRequest);
-        } else {
-            am.abandonAudioFocus(null);
-        }
+        if (Build.VERSION.SDK_INT >= 26 && focusRequest != null) am.abandonAudioFocusRequest(focusRequest);
+        else am.abandonAudioFocus(null);
     }
 
     private void onFileCompleted() {
@@ -332,6 +358,7 @@ public class PlaybackService extends Service {
         BookModel.Chapter ch = currentBook.chapters.get(currentChapterIdx);
         pausedChapterPosMs = Math.max(0, Math.min(chapPosMs, ch.durationMs));
         if (mp != null) mp.seekTo((int) (ch.startMs + pausedChapterPosMs));
+        updatePlaybackState();
         saveProgress();
     }
 
@@ -352,6 +379,7 @@ public class PlaybackService extends Service {
         else speed = 0.8f;
         getSharedPreferences("wb_prefs", MODE_PRIVATE).edit().putFloat("speed", speed).apply();
         applySpeedInternal();
+        updatePlaybackState();
     }
 
     private void applySpeedInternal() {
