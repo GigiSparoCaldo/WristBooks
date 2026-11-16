@@ -34,6 +34,7 @@ public class PlaybackService extends Service {
     private final IBinder binder = new LocalBinder();
     private MediaPlayer mp;
     private MediaSession mediaSession;
+    private AudioFocusRequest focusRequest;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     public BookModel.Book currentBook;
@@ -48,14 +49,6 @@ public class PlaybackService extends Service {
 
     private BroadcastReceiver noisyReceiver;
     private AudioDeviceCallback deviceCallback;
-
-    private final Runnable idleStopTask = () -> {
-        if (!isPlaying()) {
-            releasePlayer();
-            stopForeground(true);
-            stopSelf();
-        }
-    };
 
     private final Runnable ticker = new Runnable() {
         @Override
@@ -72,41 +65,63 @@ public class PlaybackService extends Service {
     public void onCreate() {
         super.onCreate();
         speed = getSharedPreferences("wb_prefs", MODE_PRIVATE).getFloat("speed", 1.0f);
-        setupMediaSession();
         createNotifChannel();
-        registerAudioWatchers();
     }
 
-    private void setupMediaSession() {
-        mediaSession = new MediaSession(this, "WristBooksSession");
-        mediaSession.setCallback(new MediaSession.Callback() {
-            @Override public void onPlay() { resume(); }
-            @Override public void onPause() { pause(); }
-            @Override public void onSkipToNext() { skipSeconds(15); }
-            @Override public void onSkipToPrevious() { skipSeconds(-15); }
-        });
-        mediaSession.setActive(true);
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        return START_NOT_STICKY;
     }
 
-    private void registerAudioWatchers() {
-        noisyReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context c, Intent it) {
-                if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(it.getAction())) pause();
-            }
-        };
-        registerReceiver(noisyReceiver, new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY));
-
-        if (Build.VERSION.SDK_INT >= 28) {
+    private void activateWatchersAndSession() {
+        if (mediaSession == null) {
+            mediaSession = new MediaSession(this, "WristBooksSession");
+            mediaSession.setCallback(new MediaSession.Callback() {
+                @Override public void onPlay() { resume(); }
+                @Override public void onPause() { pause(); }
+                @Override public void onSkipToNext() { skipSeconds(15); }
+                @Override public void onSkipToPrevious() { skipSeconds(-15); }
+            });
+            mediaSession.setActive(true);
+        }
+        if (noisyReceiver == null) {
+            noisyReceiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context c, Intent it) {
+                    if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(it.getAction())) pause();
+                }
+            };
+            registerReceiver(noisyReceiver, new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY));
+        }
+        if (Build.VERSION.SDK_INT >= 28 && deviceCallback == null) {
             AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
             if (am != null) {
                 deviceCallback = new AudioDeviceCallback() {
-                    @Override public void onAudioDevicesAdded(AudioDeviceInfo[] added) { switchRouteIfPlaying(); }
-                    @Override public void onAudioDevicesRemoved(AudioDeviceInfo[] removed) { switchRouteIfPlaying(); }
+                    @Override public void onAudioDevicesAdded(AudioDeviceInfo[] a) { switchRouteIfPlaying(); }
+                    @Override public void onAudioDevicesRemoved(AudioDeviceInfo[] r) { switchRouteIfPlaying(); }
                 };
                 am.registerAudioDeviceCallback(deviceCallback, handler);
             }
         }
+    }
+
+    private void deactivateWatchersAndSession() {
+        try {
+            if (noisyReceiver != null) { unregisterReceiver(noisyReceiver); noisyReceiver = null; }
+        } catch (Exception ignored) { noisyReceiver = null; }
+
+        if (Build.VERSION.SDK_INT >= 28 && deviceCallback != null) {
+            try {
+                AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
+                if (am != null) am.unregisterAudioDeviceCallback(deviceCallback);
+            } catch (Exception ignored) {}
+            deviceCallback = null;
+        }
+        if (mediaSession != null) {
+            try { mediaSession.setActive(false); mediaSession.release(); } catch (Exception ignored) {}
+            mediaSession = null;
+        }
+        abandonAudioFocus();
     }
 
     private void createNotifChannel() {
@@ -130,24 +145,17 @@ public class PlaybackService extends Service {
                     .setContentIntent(pi)
                     .setOngoing(true)
                     .build();
-            if (Build.VERSION.SDK_INT >= 29) {
-                startForeground(202, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
-            } else {
-                startForeground(202, n);
-            }
+            if (Build.VERSION.SDK_INT >= 29) startForeground(202, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+            else startForeground(202, n);
         }
-        updateMediaSessionState();
-    }
-
-    private void updateMediaSessionState() {
-        if (mediaSession == null) return;
-        int state = isPlaying() ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED;
-        PlaybackState ps = new PlaybackState.Builder()
-                .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_PLAY_PAUSE
-                        | PlaybackState.ACTION_SKIP_TO_NEXT | PlaybackState.ACTION_SKIP_TO_PREVIOUS)
-                .setState(state, getChapterPosMs(), speed)
-                .build();
-        mediaSession.setPlaybackState(ps);
+        if (mediaSession != null) {
+            PlaybackState ps = new PlaybackState.Builder()
+                    .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_PLAY_PAUSE
+                            | PlaybackState.ACTION_SKIP_TO_NEXT | PlaybackState.ACTION_SKIP_TO_PREVIOUS)
+                    .setState(PlaybackState.STATE_PLAYING, getChapterPosMs(), speed)
+                    .build();
+            mediaSession.setPlaybackState(ps);
+        }
     }
 
     private boolean hasBluetoothAudio() {
@@ -156,12 +164,8 @@ public class PlaybackService extends Service {
         if (am == null) return false;
         for (AudioDeviceInfo d : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
             int t = d.getType();
-            if (t == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
-                    || t == AudioDeviceInfo.TYPE_BLE_HEADSET
-                    || t == AudioDeviceInfo.TYPE_BLE_SPEAKER
-                    || t == AudioDeviceInfo.TYPE_HEARING_AID) {
-                return true;
-            }
+            if (t == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || t == AudioDeviceInfo.TYPE_BLE_HEADSET
+                    || t == AudioDeviceInfo.TYPE_BLE_SPEAKER || t == AudioDeviceInfo.TYPE_HEARING_AID) return true;
         }
         return false;
     }
@@ -192,7 +196,6 @@ public class PlaybackService extends Service {
 
     public void loadBookChapter(BookModel.Book book, int chapIdx, long chapOffsetMs, boolean autoPlay) {
         if (book == null || book.chapters.isEmpty()) return;
-        handler.removeCallbacks(idleStopTask);
         currentBook = book;
         currentChapterIdx = Math.max(0, Math.min(chapIdx, book.chapters.size() - 1));
         BookModel.Chapter ch = book.chapters.get(currentChapterIdx);
@@ -220,6 +223,7 @@ public class PlaybackService extends Service {
             applySpeedInternal();
             if (autoPlay) {
                 if (Build.VERSION.SDK_INT >= 26) startForegroundService(new Intent(this, PlaybackService.class));
+                activateWatchersAndSession();
                 requestAudioFocus();
                 promoteForeground();
                 mp.start();
@@ -234,9 +238,20 @@ public class PlaybackService extends Service {
         AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
         if (am == null) return;
         if (Build.VERSION.SDK_INT >= 26) {
-            am.requestAudioFocus(new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN).build());
+            if (focusRequest == null) focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN).build();
+            am.requestAudioFocus(focusRequest);
         } else {
             am.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+        }
+    }
+
+    private void abandonAudioFocus() {
+        AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
+        if (am == null) return;
+        if (Build.VERSION.SDK_INT >= 26 && focusRequest != null) {
+            am.abandonAudioFocusRequest(focusRequest);
+        } else {
+            am.abandonAudioFocus(null);
         }
     }
 
@@ -259,10 +274,8 @@ public class PlaybackService extends Service {
 
     public void resume() {
         if (currentBook == null) return;
-        handler.removeCallbacks(idleStopTask);
         if (mp == null) {
-            long at = Math.max(0, pausedChapterPosMs - 3000);
-            loadBookChapter(currentBook, currentChapterIdx, at, true);
+            loadBookChapter(currentBook, currentChapterIdx, Math.max(0, pausedChapterPosMs - 3000), true);
             return;
         }
         if (!mp.isPlaying()) {
@@ -273,6 +286,7 @@ public class PlaybackService extends Service {
             mp.setVolume(1.0f, 1.0f);
             applySpeedInternal();
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(new Intent(this, PlaybackService.class));
+            activateWatchersAndSession();
             requestAudioFocus();
             promoteForeground();
             mp.start();
@@ -283,46 +297,41 @@ public class PlaybackService extends Service {
 
     public void pause() {
         pausedChapterPosMs = getChapterPosMs();
-        try {
-            if (mp != null && mp.isPlaying()) mp.pause();
-        } catch (Exception ignored) {}
+        try { if (mp != null && mp.isPlaying()) mp.pause(); } catch (Exception ignored) {}
         handler.removeCallbacks(ticker);
         saveProgress();
         releasePlayer();
+        deactivateWatchersAndSession();
         stopForeground(true);
-        updateMediaSessionState();
-        handler.removeCallbacks(idleStopTask);
-        handler.postDelayed(idleStopTask, 60_000L);
+        stopSelf();
+    }
+
+    public void forceStopAll() {
+        sleepEndEpochMs = 0;
+        sleepEndOfChapter = false;
+        pause();
     }
 
     public void skipSeconds(int sec) {
         if (currentBook == null) return;
         BookModel.Chapter ch = currentBook.chapters.get(currentChapterIdx);
-        long newChapPos = getChapterPosMs() + (sec * 1000L);
-        if (newChapPos < 0) {
+        long newPos = getChapterPosMs() + (sec * 1000L);
+        if (newPos < 0) {
             if (currentChapterIdx > 0) {
                 BookModel.Chapter prev = currentBook.chapters.get(currentChapterIdx - 1);
                 loadBookChapter(currentBook, currentChapterIdx - 1, Math.max(0, prev.durationMs - 15000), isPlaying());
-            } else {
-                seekChapterTo(0);
-            }
-        } else if (ch.durationMs > 0 && newChapPos >= ch.durationMs) {
-            if (currentChapterIdx + 1 < currentBook.chapters.size()) {
-                loadBookChapter(currentBook, currentChapterIdx + 1, 0, isPlaying());
-            } else {
-                seekChapterTo(ch.durationMs);
-            }
-        } else {
-            seekChapterTo(newChapPos);
-        }
+            } else seekChapterTo(0);
+        } else if (ch.durationMs > 0 && newPos >= ch.durationMs) {
+            if (currentChapterIdx + 1 < currentBook.chapters.size()) loadBookChapter(currentBook, currentChapterIdx + 1, 0, isPlaying());
+            else seekChapterTo(ch.durationMs);
+        } else seekChapterTo(newPos);
     }
 
     public void seekChapterTo(long chapPosMs) {
         if (currentBook == null) return;
         BookModel.Chapter ch = currentBook.chapters.get(currentChapterIdx);
-        long clamped = Math.max(0, Math.min(chapPosMs, ch.durationMs));
-        pausedChapterPosMs = clamped;
-        if (mp != null) mp.seekTo((int) (ch.startMs + clamped));
+        pausedChapterPosMs = Math.max(0, Math.min(chapPosMs, ch.durationMs));
+        if (mp != null) mp.seekTo((int) (ch.startMs + pausedChapterPosMs));
         saveProgress();
     }
 
@@ -348,9 +357,9 @@ public class PlaybackService extends Service {
     private void applySpeedInternal() {
         if (mp == null) return;
         try {
-            boolean wasPlaying = mp.isPlaying();
+            boolean was = mp.isPlaying();
             mp.setPlaybackParams(mp.getPlaybackParams().setSpeed(speed));
-            if (!wasPlaying) mp.pause();
+            if (!was) mp.pause();
         } catch (Exception ignored) {}
     }
 
@@ -365,10 +374,7 @@ public class PlaybackService extends Service {
 
     public String getSleepLabel() {
         if (sleepEndOfChapter) return "Fine cap.";
-        if (sleepEndEpochMs > 0) {
-            long remMin = Math.max(1, (sleepEndEpochMs - System.currentTimeMillis() + 59999) / 60000);
-            return remMin + "m";
-        }
+        if (sleepEndEpochMs > 0) return Math.max(1, (sleepEndEpochMs - System.currentTimeMillis() + 59999) / 60000) + "m";
         return "Zzz";
     }
 
@@ -376,44 +382,28 @@ public class PlaybackService extends Service {
         if (mp == null || currentBook == null) return;
         BookModel.Chapter ch = currentBook.chapters.get(currentChapterIdx);
         long filePos = mp.getCurrentPosition();
-
         if (ch.durationMs > 0 && filePos >= ch.startMs + ch.durationMs - 250) {
             if (sleepEndOfChapter) {
                 sleepEndOfChapter = false;
-                if (currentChapterIdx + 1 < currentBook.chapters.size()) {
-                    currentChapterIdx++;
-                    pausedChapterPosMs = 0;
-                    saveProgress();
-                }
+                if (currentChapterIdx + 1 < currentBook.chapters.size()) { currentChapterIdx++; pausedChapterPosMs = 0; saveProgress(); }
                 pause();
                 return;
             }
-            if (currentChapterIdx + 1 < currentBook.chapters.size()) {
-                currentChapterIdx++;
-                saveProgress();
-                promoteForeground();
-            }
+            if (currentChapterIdx + 1 < currentBook.chapters.size()) { currentChapterIdx++; saveProgress(); promoteForeground(); }
         }
-
         if (sleepEndEpochMs > 0) {
             long left = sleepEndEpochMs - System.currentTimeMillis();
-            if (left <= 0) {
-                sleepEndEpochMs = 0;
-                pause();
-            } else if (left < 10_000L) {
-                float vol = Math.max(0.1f, left / 10_000f);
-                mp.setVolume(vol, vol);
-            }
+            if (left <= 0) { sleepEndEpochMs = 0; pause(); }
+            else if (left < 10_000L) { float v = Math.max(0.1f, left / 10_000f); mp.setVolume(v, v); }
         }
     }
 
     public void saveProgress() {
         if (currentBook == null) return;
-        SharedPreferences.Editor ed = getSharedPreferences("wb_progress", MODE_PRIVATE).edit();
-        ed.putInt(currentBook.id + "_ch", currentChapterIdx);
-        ed.putLong(currentBook.id + "_pos", getChapterPosMs());
-        ed.putString("last_book_id", currentBook.id);
-        ed.apply();
+        getSharedPreferences("wb_progress", MODE_PRIVATE).edit()
+                .putInt(currentBook.id + "_ch", currentChapterIdx)
+                .putLong(currentBook.id + "_pos", getChapterPosMs())
+                .putString("last_book_id", currentBook.id).apply();
     }
 
     private void releasePlayer() {
@@ -429,13 +419,8 @@ public class PlaybackService extends Service {
     public void onDestroy() {
         saveProgress();
         handler.removeCallbacksAndMessages(null);
-        try { if (noisyReceiver != null) unregisterReceiver(noisyReceiver); } catch (Exception ignored) {}
-        if (Build.VERSION.SDK_INT >= 28 && deviceCallback != null) {
-            AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
-            if (am != null) am.unregisterAudioDeviceCallback(deviceCallback);
-        }
         releasePlayer();
-        if (mediaSession != null) mediaSession.release();
+        deactivateWatchersAndSession();
         super.onDestroy();
     }
 

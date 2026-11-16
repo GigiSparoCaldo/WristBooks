@@ -54,14 +54,16 @@ public class MainActivity extends Activity {
             if (svc.currentBook != null && svc.isPlaying()) {
                 selectedBook = svc.currentBook;
                 showPlayer();
-            } else if (BookCache.hasCache(MainActivity.this)) {
-                library = BookCache.loadLibrary(MainActivity.this);
-                showLibrary();
-            } else {
-                refreshLibrary();
+            } else if (screenMode == 0 && library.isEmpty()) {
+                if (BookCache.hasCache(MainActivity.this)) {
+                    library = BookCache.loadLibrary(MainActivity.this);
+                    showLibrary();
+                } else {
+                    refreshLibrary();
+                }
             }
         }
-        @Override public void onServiceDisconnected(ComponentName name) { bound = false; }
+        @Override public void onServiceDisconnected(ComponentName name) { bound = false; svc = null; }
     };
 
     @Override
@@ -75,8 +77,40 @@ public class MainActivity extends Activity {
         } else if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE}, 10);
         }
-        Intent it = new Intent(this, PlaybackService.class);
-        bindService(it, conn, Context.BIND_AUTO_CREATE);
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        if (!bound) {
+            bindService(new Intent(this, PlaybackService.class), conn, Context.BIND_AUTO_CREATE);
+        }
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        // Se esci dall'app mentre l'audio non è in riproduzione, distrugge subito il servizio in background
+        if (bound && (svc == null || !svc.isPlaying())) {
+            try { unbindService(conn); } catch (Exception ignored) {}
+            bound = false;
+            svc = null;
+            stopService(new Intent(this, PlaybackService.class));
+        }
+    }
+
+    public void forceShutdownApp() {
+        uiHandler.removeCallbacksAndMessages(null);
+        if (svc != null) svc.forceStopAll();
+        if (bound) {
+            try { unbindService(conn); } catch (Exception ignored) {}
+            bound = false;
+            svc = null;
+        }
+        stopService(new Intent(this, PlaybackService.class));
+        Toast.makeText(this, "WristBooks chiuso", Toast.LENGTH_SHORT).show();
+        finishAndRemoveTask();
+        uiHandler.postDelayed(() -> System.exit(0), 150);
     }
 
     @Override
@@ -135,7 +169,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         uiHandler.removeCallbacksAndMessages(null);
-        if (bound) { unbindService(conn); bound = false; }
+        if (bound) {
+            try { unbindService(conn); } catch (Exception ignored) {}
+            bound = false;
+        }
         pool.shutdownNow();
         super.onDestroy();
     }
@@ -165,7 +202,7 @@ public class MainActivity extends Activity {
         hdr.setOrientation(LinearLayout.HORIZONTAL);
         hdr.setGravity(Gravity.CENTER);
         TextView title = new TextView(this);
-        title.setText("Audiolibri");
+        title.setText("Libri");
         title.setTextColor(Color.WHITE);
         title.setTextSize(15f);
         title.setTypeface(null, Typeface.BOLD);
@@ -173,14 +210,14 @@ public class MainActivity extends Activity {
 
         Button bScan = ui.chip("↻", "#181B22", "#272C37", "#2E3442", "#EF4444", 12f);
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(ui.dp(32), ui.dp(32));
-        slp.leftMargin = ui.dp(8);
+        slp.leftMargin = ui.dp(6);
         bScan.setLayoutParams(slp);
         bScan.setOnClickListener(v -> refreshLibrary());
         hdr.addView(bScan);
 
         Button bAdd = ui.chip("+", "#181B22", "#272C37", "#2E3442", "#34D399", 13f);
         LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(ui.dp(32), ui.dp(32));
-        alp.leftMargin = ui.dp(6);
+        alp.leftMargin = ui.dp(5);
         bAdd.setLayoutParams(alp);
         bAdd.setOnClickListener(v -> {
             Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -189,6 +226,13 @@ public class MainActivity extends Activity {
             startActivityForResult(pick, REQ_IMPORT);
         });
         hdr.addView(bAdd);
+
+        Button bOff = ui.chip("⏻", "#261214", "#3B181C", "#EF4444", "#FCA5A5", 11f);
+        LinearLayout.LayoutParams olp = new LinearLayout.LayoutParams(ui.dp(32), ui.dp(32));
+        olp.leftMargin = ui.dp(5);
+        bOff.setLayoutParams(olp);
+        bOff.setOnClickListener(v -> forceShutdownApp());
+        hdr.addView(bOff);
         ui.box.addView(hdr);
 
         if (library.isEmpty()) {

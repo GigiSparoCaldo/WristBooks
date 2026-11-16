@@ -209,9 +209,9 @@ public class PlayerView {
         bNote.setLayoutParams(new LinearLayout.LayoutParams(0, ui.dp(36), 1f));
         bNote.setOnClickListener(v -> ChaptersView.addBookmark(app));
 
-        Button bBt = ui.chip("🎧 Bluetooth", "#111D2E", "#1A2E47", "#2563EB", "#60A5FA", 11f);
+        Button bBt = ui.chip("🎧 BT", "#111D2E", "#1A2E47", "#2563EB", "#60A5FA", 11f);
         LinearLayout.LayoutParams btlp = new LinearLayout.LayoutParams(0, ui.dp(36), 1f);
-        btlp.leftMargin = ui.dp(8);
+        btlp.leftMargin = ui.dp(6);
         bBt.setLayoutParams(btlp);
         bBt.setOnClickListener(v -> {
             try { app.startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); }
@@ -220,6 +220,13 @@ public class PlayerView {
         exRow.addView(bNote);
         exRow.addView(bBt);
         ui.box.addView(exRow);
+
+        Button bKill = ui.chip("⏻ Chiudi Tutto (Stop)", "#261214", "#3B181C", "#EF4444", "#FCA5A5", 11.5f);
+        LinearLayout.LayoutParams klp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ui.dp(36));
+        klp.topMargin = ui.dp(8);
+        bKill.setLayoutParams(klp);
+        bKill.setOnClickListener(v -> app.forceShutdownApp());
+        ui.box.addView(bKill);
 
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar sb, int p, boolean user) {
