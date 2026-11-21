@@ -54,13 +54,12 @@ public class MainActivity extends Activity {
             if (svc.currentBook != null && svc.isPlaying()) {
                 selectedBook = svc.currentBook;
                 showPlayer();
-            } else if (screenMode == 0 && library.isEmpty()) {
-                if (BookCache.hasCache(MainActivity.this)) {
+            } else if (screenMode == 0) {
+                if (library.isEmpty() && BookCache.hasCache(MainActivity.this)) {
                     library = BookCache.loadLibrary(MainActivity.this);
-                    showLibrary();
-                } else {
-                    refreshLibrary();
                 }
+                if (!library.isEmpty()) showLibrary();
+                else refreshLibrary();
             }
         }
         @Override public void onServiceDisconnected(ComponentName name) { bound = false; svc = null; }
@@ -84,13 +83,14 @@ public class MainActivity extends Activity {
         super.onStart();
         if (!bound) {
             bindService(new Intent(this, PlaybackService.class), conn, Context.BIND_AUTO_CREATE);
+        } else if (screenMode == 0 && !library.isEmpty()) {
+            showLibrary();
         }
     }
 
     @Override
     protected void onStop() {
         super.onStop();
-        // Se esci dall'app mentre l'audio non è in riproduzione, distrugge subito il servizio in background
         if (bound && (svc == null || !svc.isPlaying())) {
             try { unbindService(conn); } catch (Exception ignored) {}
             bound = false;
@@ -244,19 +244,37 @@ public class MainActivity extends Activity {
         }
 
         SharedPreferences prog = getSharedPreferences("wb_progress", MODE_PRIVATE);
-        for (final BookModel.Book b : library) {
-            int savedCh = prog.getInt(b.id + "_ch", 0);
-            long savedPos = prog.getLong(b.id + "_pos", 0);
+        String lastBookId = prog.getString("last_book_id", "");
+
+        List<BookModel.Book> ordered = new ArrayList<>();
+        BookModel.Book lastBook = null;
+        for (BookModel.Book b : library) {
+            if (!lastBookId.isEmpty() && b.id.equals(lastBookId)) {
+                lastBook = b;
+                ordered.add(0, b);
+            } else {
+                ordered.add(b);
+            }
+        }
+
+        for (final BookModel.Book b : ordered) {
+            final boolean isLast = (lastBook != null && b.id.equals(lastBook.id));
+            final int savedCh = prog.getInt(b.id + "_ch", 0);
+            final long savedPos = prog.getLong(b.id + "_pos", 0);
             int pct = b.getPercent(savedCh, savedPos);
             long remMs = Math.max(0, b.totalDurationMs - b.getElapsedBookMs(savedCh, savedPos));
 
             LinearLayout card = ui.card();
+            if (isLast) {
+                card.setBackground(ui.roundBox("#1B1316", "#EF4444", 16));
+            }
+
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
 
             ImageView iv = new ImageView(this);
-            iv.setLayoutParams(new LinearLayout.LayoutParams(ui.dp(48), ui.dp(48)));
+            iv.setLayoutParams(new LinearLayout.LayoutParams(ui.dp(46), ui.dp(46)));
             iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
             if (b.cover != null) iv.setImageBitmap(b.cover);
             else iv.setBackground(ui.roundBox("#1F2430", "#EF4444", 10));
@@ -265,16 +283,33 @@ public class MainActivity extends Activity {
             LinearLayout info = new LinearLayout(this);
             info.setOrientation(LinearLayout.VERTICAL);
             LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-            ilp.leftMargin = ui.dp(10);
+            ilp.leftMargin = ui.dp(9);
             info.setLayoutParams(ilp);
 
-            TextView tvT = ui.text(info, b.title, 13f, "#F8FAFC", true);
+            if (isLast) {
+                ui.text(info, "ULTIMO ASCOLTATO", 9.5f, "#38BDF8", true);
+            }
+
+            TextView tvT = ui.text(info, b.title, 12.5f, "#F8FAFC", true);
             tvT.setMaxLines(2);
             tvT.setEllipsize(TextUtils.TruncateAt.END);
-            ui.text(info, pct + "%  •  -" + BookModel.fmtBookHours(remMs), 11f, "#EF4444", true);
-            ui.text(info, b.chapters.size() + " capitoli", 10f, "#94A3B8", false);
-
+            ui.text(info, pct + "%  •  -" + BookModel.fmtBookHours(remMs), 10.5f, "#EF4444", true);
+            ui.text(info, "Cap. " + (savedCh + 1) + "/" + b.chapters.size(), 10f, "#94A3B8", false);
             row.addView(info);
+
+            if (isLast) {
+                Button bQuickPlay = ui.chip("▶", "#EF4444", "#DC2626", null, "#FFFFFF", 13f);
+                LinearLayout.LayoutParams qlp = new LinearLayout.LayoutParams(ui.dp(34), ui.dp(34));
+                qlp.leftMargin = ui.dp(6);
+                bQuickPlay.setLayoutParams(qlp);
+                bQuickPlay.setOnClickListener(v -> {
+                    selectedBook = b;
+                    if (svc != null) svc.loadBookChapter(b, savedCh, savedPos, true);
+                    showPlayer();
+                });
+                row.addView(bQuickPlay);
+            }
+
             card.addView(row);
             card.setOnClickListener(v -> { selectedBook = b; showChapters(b, false); });
             ui.box.addView(card);
