@@ -41,6 +41,7 @@ public class MainActivity extends Activity {
     public PlaybackService svc;
     public final Handler uiHandler = new Handler(Looper.getMainLooper());
     public int screenMode = 0;
+    public boolean isForeground = false;
     public BookModel.Book selectedBook;
 
     private boolean bound = false;
@@ -59,6 +60,8 @@ public class MainActivity extends Activity {
                     library = BookCache.loadLibrary(MainActivity.this);
                 }
                 if (!library.isEmpty()) showLibrary();
+        } else if (screenMode == 2 && svc != null) {
+            showPlayer();
                 else refreshLibrary();
             }
         }
@@ -80,16 +83,21 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onStart() {
+        isForeground = true;
         super.onStart();
         if (!bound) {
             bindService(new Intent(this, PlaybackService.class), conn, Context.BIND_AUTO_CREATE);
         } else if (screenMode == 0 && !library.isEmpty()) {
             showLibrary();
+        } else if (screenMode == 2 && svc != null) {
+            showPlayer();
         }
     }
 
     @Override
     protected void onStop() {
+        isForeground = false;
+        uiHandler.removeCallbacksAndMessages(null);
         super.onStop();
         if (bound && (svc == null || !svc.isPlaying())) {
             try { unbindService(conn); } catch (Exception ignored) {}
@@ -144,7 +152,9 @@ public class MainActivity extends Activity {
                     }
                     library = M4bParser.scanLibrary(this);
                     BookCache.saveLibrary(this, library);
-                    runOnUiThread(() -> { Toast.makeText(this, "Importato!", Toast.LENGTH_SHORT).show(); showLibrary(); });
+                    runOnUiThread(() -> { Toast.makeText(this, "Importato!", Toast.LENGTH_SHORT).show(); showLibrary();
+        } else if (screenMode == 2 && svc != null) {
+            showPlayer(); });
                 } catch (Exception e) {
                     runOnUiThread(() -> Toast.makeText(this, "Errore: " + e.getMessage(), Toast.LENGTH_LONG).show());
                 }
@@ -163,6 +173,8 @@ public class MainActivity extends Activity {
         uiHandler.removeCallbacksAndMessages(null);
         if (screenMode == 2 && selectedBook != null) showChapters(selectedBook, false);
         else if (screenMode == 1) showLibrary();
+        } else if (screenMode == 2 && svc != null) {
+            showPlayer();
         else super.onBackPressed();
     }
 
@@ -189,6 +201,8 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 Toast.makeText(this, "Trovati " + library.size() + " audiolibri", Toast.LENGTH_SHORT).show();
                 showLibrary();
+        } else if (screenMode == 2 && svc != null) {
+            showPlayer();
             });
         });
     }

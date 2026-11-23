@@ -249,7 +249,7 @@ public class PlayerView {
 
         app.uiHandler.post(new Runnable() {
             @Override public void run() {
-                if (app.screenMode != 2) return;
+                if (app.screenMode != 2 || !app.isForeground) return;
                 if (svc != null && svc.currentBook != null) {
                     BookModel.Book b = svc.currentBook;
                     int ci = svc.currentChapterIdx;
@@ -273,7 +273,7 @@ public class PlayerView {
                     bSleep.setTextColor(Color.parseColor("Zzz".equals(sl) ? "#94A3B8" : "#EF4444"));
                     tvVol.setText("🔊 " + volPct(am) + "%");
                 }
-                app.uiHandler.postDelayed(this, 500);
+                app.uiHandler.postDelayed(this, 1000);
             }
         });
     }

@@ -49,6 +49,7 @@ public class PlaybackService extends Service {
     private String loadedFilePath = "";
     private boolean lastUsedBt = false;
     public float speed = 1.0f;
+    private int tickCount = 0;
 
     public long sleepEndEpochMs = 0;
     public boolean sleepEndOfChapter = false;
@@ -72,9 +73,9 @@ public class PlaybackService extends Service {
         public void run() {
             checkChapterAndSleep();
             if (isPlaying()) {
-                saveProgress();
-                updatePlaybackState();
-                handler.postDelayed(this, 1000);
+                tickCount++;
+                if (tickCount % 5 == 0) saveProgress();
+                handler.postDelayed(this, 3000);
             }
         }
     };
@@ -153,9 +154,7 @@ public class PlaybackService extends Service {
                 if (s != null) {
                     offBodyListener = new SensorEventListener() {
                         @Override public void onSensorChanged(SensorEvent ev) {
-                            if (ev.values != null && ev.values.length > 0 && ev.values[0] == 0.0f && isPlaying()) {
-                                pause();
-                            }
+                            if (ev.values != null && ev.values.length > 0 && ev.values[0] == 0.0f && isPlaying()) pause();
                         }
                         @Override public void onAccuracyChanged(Sensor sensor, int accuracy) {}
                     };
@@ -168,10 +167,8 @@ public class PlaybackService extends Service {
     private void deactivateWatchersAndSession() {
         try { if (noisyReceiver != null) { unregisterReceiver(noisyReceiver); noisyReceiver = null; } }
         catch (Exception ignored) { noisyReceiver = null; }
-
         try { if (dndReceiver != null) { unregisterReceiver(dndReceiver); dndReceiver = null; } }
         catch (Exception ignored) { dndReceiver = null; }
-
         if (offBodyListener != null) {
             try {
                 SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
@@ -315,8 +312,9 @@ public class PlaybackService extends Service {
                 requestAudioFocus();
                 promoteForeground();
                 mp.start();
+                tickCount = 0;
                 handler.removeCallbacks(ticker);
-                handler.postDelayed(ticker, 1000);
+                handler.postDelayed(ticker, 3000);
             }
             saveProgress();
         } catch (Exception ignored) {}
@@ -383,8 +381,9 @@ public class PlaybackService extends Service {
             requestAudioFocus();
             promoteForeground();
             mp.start();
+            tickCount = 0;
             handler.removeCallbacks(ticker);
-            handler.postDelayed(ticker, 1000);
+            handler.postDelayed(ticker, 3000);
         }
     }
 
@@ -452,6 +451,8 @@ public class PlaybackService extends Service {
     private void applySpeedInternal() {
         if (mp == null) return;
         try {
+            float cur = mp.getPlaybackParams().getSpeed();
+            if (Math.abs(cur - speed) < 0.01f) return;
             boolean was = mp.isPlaying();
             mp.setPlaybackParams(mp.getPlaybackParams().setSpeed(speed));
             if (!was) mp.pause();
