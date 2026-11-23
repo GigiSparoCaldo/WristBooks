@@ -12,10 +12,6 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.graphics.drawable.Icon;
-import android.hardware.Sensor;
-import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
-import android.hardware.SensorManager;
 import android.media.AudioAttributes;
 import android.media.AudioDeviceCallback;
 import android.media.AudioDeviceInfo;
@@ -57,7 +53,6 @@ public class PlaybackService extends Service {
     private BroadcastReceiver systemStateReceiver;
     private int initialInterruptionFilter = NotificationManager.INTERRUPTION_FILTER_ALL;
     private AudioDeviceCallback deviceCallback;
-    private SensorEventListener offBodyListener;
 
     private final AudioManager.OnAudioFocusChangeListener focusListener = focusChange -> {
         if (focusChange == AudioManager.AUDIOFOCUS_LOSS
@@ -160,21 +155,6 @@ public class PlaybackService extends Service {
                 am.registerAudioDeviceCallback(deviceCallback, handler);
             }
         }
-        if (offBodyListener == null) {
-            SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
-            if (sm != null) {
-                Sensor s = sm.getDefaultSensor(Sensor.TYPE_LOW_LATENCY_OFFBODY_DETECT);
-                if (s != null) {
-                    offBodyListener = new SensorEventListener() {
-                        @Override public void onSensorChanged(SensorEvent ev) {
-                            if (ev.values != null && ev.values.length > 0 && ev.values[0] == 0.0f && isPlaying()) pause();
-                        }
-                        @Override public void onAccuracyChanged(Sensor sensor, int accuracy) {}
-                    };
-                    sm.registerListener(offBodyListener, s, SensorManager.SENSOR_DELAY_NORMAL, handler);
-                }
-            }
-        }
     }
 
     private void deactivateWatchersAndSession() {
@@ -182,13 +162,6 @@ public class PlaybackService extends Service {
         catch (Exception ignored) { noisyReceiver = null; }
         try { if (systemStateReceiver != null) { unregisterReceiver(systemStateReceiver); systemStateReceiver = null; } }
         catch (Exception ignored) { systemStateReceiver = null; }
-        if (offBodyListener != null) {
-            try {
-                SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
-                if (sm != null) sm.unregisterListener(offBodyListener);
-            } catch (Exception ignored) {}
-            offBodyListener = null;
-        }
         if (Build.VERSION.SDK_INT >= 28 && deviceCallback != null) {
             try {
                 AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
