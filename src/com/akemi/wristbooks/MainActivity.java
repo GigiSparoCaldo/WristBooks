@@ -49,10 +49,11 @@ public class MainActivity extends Activity {
     private List<BookModel.Book> library = new ArrayList<>();
 
     private final ServiceConnection conn = new ServiceConnection() {
-        @Override public void onServiceConnected(ComponentName name, IBinder binder) {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder binder) {
             svc = ((PlaybackService.LocalBinder) binder).getService();
             bound = true;
-            if (svc.currentBook != null && svc.isPlaying()) {
+            if (svc.currentBook != null && (svc.isPlaying() || screenMode == 2)) {
                 selectedBook = svc.currentBook;
                 showPlayer();
             } else if (screenMode == 0) {
@@ -60,12 +61,15 @@ public class MainActivity extends Activity {
                     library = BookCache.loadLibrary(MainActivity.this);
                 }
                 if (!library.isEmpty()) showLibrary();
-        } else if (screenMode == 2 && svc != null) {
-            showPlayer();
                 else refreshLibrary();
             }
         }
-        @Override public void onServiceDisconnected(ComponentName name) { bound = false; svc = null; }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            bound = false;
+            svc = null;
+        }
     };
 
     @Override
@@ -83,22 +87,22 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onStart() {
-        isForeground = true;
         super.onStart();
+        isForeground = true;
         if (!bound) {
             bindService(new Intent(this, PlaybackService.class), conn, Context.BIND_AUTO_CREATE);
-        } else if (screenMode == 0 && !library.isEmpty()) {
-            showLibrary();
         } else if (screenMode == 2 && svc != null) {
             showPlayer();
+        } else if (screenMode == 0 && !library.isEmpty()) {
+            showLibrary();
         }
     }
 
     @Override
     protected void onStop() {
+        super.onStop();
         isForeground = false;
         uiHandler.removeCallbacksAndMessages(null);
-        super.onStop();
         if (bound && (svc == null || !svc.isPlaying())) {
             try { unbindService(conn); } catch (Exception ignored) {}
             bound = false;
@@ -152,9 +156,10 @@ public class MainActivity extends Activity {
                     }
                     library = M4bParser.scanLibrary(this);
                     BookCache.saveLibrary(this, library);
-                    runOnUiThread(() -> { Toast.makeText(this, "Importato!", Toast.LENGTH_SHORT).show(); showLibrary();
-        } else if (screenMode == 2 && svc != null) {
-            showPlayer(); });
+                    runOnUiThread(() -> {
+                        Toast.makeText(this, "Importato!", Toast.LENGTH_SHORT).show();
+                        showLibrary();
+                    });
                 } catch (Exception e) {
                     runOnUiThread(() -> Toast.makeText(this, "Errore: " + e.getMessage(), Toast.LENGTH_LONG).show());
                 }
@@ -172,10 +177,7 @@ public class MainActivity extends Activity {
     public void onBackPressed() {
         uiHandler.removeCallbacksAndMessages(null);
         if (screenMode == 2 && selectedBook != null) showChapters(selectedBook, false);
-        else if (screenMode == 3) showLibrary();
-        else if (screenMode == 1) showLibrary();
-        } else if (screenMode == 2 && svc != null) {
-            showPlayer();
+        else if (screenMode == 1 || screenMode == 3) showLibrary();
         else super.onBackPressed();
     }
 
@@ -202,8 +204,6 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 Toast.makeText(this, "Trovati " + library.size() + " audiolibri", Toast.LENGTH_SHORT).show();
                 showLibrary();
-        } else if (screenMode == 2 && svc != null) {
-            showPlayer();
             });
         });
     }
