@@ -49,13 +49,12 @@ public class PlaybackService extends Service {
     private String loadedFilePath = "";
     private boolean lastUsedBt = false;
     public float speed = 1.0f;
-    private int tickCount = 0;
 
     public long sleepEndEpochMs = 0;
     public boolean sleepEndOfChapter = false;
 
     private BroadcastReceiver noisyReceiver;
-    private BroadcastReceiver dndReceiver;
+    private BroadcastReceiver systemStateReceiver;
     private int initialInterruptionFilter = NotificationManager.INTERRUPTION_FILTER_ALL;
     private AudioDeviceCallback deviceCallback;
     private SensorEventListener offBodyListener;
@@ -68,17 +67,18 @@ public class PlaybackService extends Service {
         }
     };
 
-    private final Runnable ticker = new Runnable() {
+    private final Runnable backupSaveTask = new Runnable() {
         @Override
         public void run() {
-            checkChapterAndSleep();
             if (isPlaying()) {
-                tickCount++;
-                if (tickCount % 5 == 0) saveProgress();
-                handler.postDelayed(this, 3000);
+                saveProgress();
+                handler.postDelayed(this, 180_000L);
             }
         }
     };
+
+    private final Runnable chapterBoundaryTask = () -> handleChapterBoundary();
+    private final Runnable sleepTimerTask = () -> handleSleepTimer();
 
     @Override
     public void onCreate() {
@@ -119,23 +119,33 @@ public class PlaybackService extends Service {
             };
             registerReceiver(noisyReceiver, new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY));
         }
-        if (dndReceiver == null) {
+        if (systemStateReceiver == null) {
             NotificationManager nm = getSystemService(NotificationManager.class);
             if (nm != null) initialInterruptionFilter = nm.getCurrentInterruptionFilter();
-            dndReceiver = new BroadcastReceiver() {
+            systemStateReceiver = new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context c, Intent it) {
-                    NotificationManager m = getSystemService(NotificationManager.class);
-                    if (m != null) {
-                        int cur = m.getCurrentInterruptionFilter();
-                        if (cur != NotificationManager.INTERRUPTION_FILTER_ALL
-                                && cur != initialInterruptionFilter && isPlaying()) {
-                            pause();
+                    String act = it.getAction();
+                    if (NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED.equals(act)) {
+                        NotificationManager m = getSystemService(NotificationManager.class);
+                        if (m != null) {
+                            int cur = m.getCurrentInterruptionFilter();
+                            if (cur != NotificationManager.INTERRUPTION_FILTER_ALL
+                                    && cur != initialInterruptionFilter && isPlaying()) pause();
                         }
+                    } else if (PowerManager.ACTION_POWER_SAVE_MODE_CHANGED.equals(act)) {
+                        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+                        if (pm != null && pm.isPowerSaveMode() && isPlaying()) pause();
+                    } else if (Intent.ACTION_SCREEN_ON.equals(act)) {
+                        if (isPlaying()) { saveProgress(); updatePlaybackState(); }
                     }
                 }
             };
-            registerReceiver(dndReceiver, new IntentFilter(NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED));
+            IntentFilter f = new IntentFilter();
+            f.addAction(NotificationManager.ACTION_INTERRUPTION_FILTER_CHANGED);
+            f.addAction(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED);
+            f.addAction(Intent.ACTION_SCREEN_ON);
+            registerReceiver(systemStateReceiver, f);
         }
         if (Build.VERSION.SDK_INT >= 28 && deviceCallback == null) {
             AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
@@ -167,8 +177,8 @@ public class PlaybackService extends Service {
     private void deactivateWatchersAndSession() {
         try { if (noisyReceiver != null) { unregisterReceiver(noisyReceiver); noisyReceiver = null; } }
         catch (Exception ignored) { noisyReceiver = null; }
-        try { if (dndReceiver != null) { unregisterReceiver(dndReceiver); dndReceiver = null; } }
-        catch (Exception ignored) { dndReceiver = null; }
+        try { if (systemStateReceiver != null) { unregisterReceiver(systemStateReceiver); systemStateReceiver = null; } }
+        catch (Exception ignored) { systemStateReceiver = null; }
         if (offBodyListener != null) {
             try {
                 SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
@@ -312,9 +322,9 @@ public class PlaybackService extends Service {
                 requestAudioFocus();
                 promoteForeground();
                 mp.start();
-                tickCount = 0;
-                handler.removeCallbacks(ticker);
-                handler.postDelayed(ticker, 3000);
+                cancelZeroPolling();
+                scheduleZeroPolling();
+                handler.postDelayed(backupSaveTask, 180_000L);
             }
             saveProgress();
         } catch (Exception ignored) {}
@@ -347,6 +357,16 @@ public class PlaybackService extends Service {
     }
 
     private void onFileCompleted() {
+        if (sleepEndOfChapter) {
+            sleepEndOfChapter = false;
+            if (currentBook != null && currentChapterIdx + 1 < currentBook.chapters.size()) {
+                currentChapterIdx++;
+                pausedChapterPosMs = 0;
+                saveProgress();
+            }
+            pause();
+            return;
+        }
         if (currentBook != null && currentChapterIdx + 1 < currentBook.chapters.size()) {
             loadBookChapter(currentBook, currentChapterIdx + 1, 0, true);
         } else {
@@ -381,16 +401,16 @@ public class PlaybackService extends Service {
             requestAudioFocus();
             promoteForeground();
             mp.start();
-            tickCount = 0;
-            handler.removeCallbacks(ticker);
-            handler.postDelayed(ticker, 3000);
+            cancelZeroPolling();
+            scheduleZeroPolling();
+            handler.postDelayed(backupSaveTask, 180_000L);
         }
     }
 
     public void pause() {
         pausedChapterPosMs = getChapterPosMs();
         try { if (mp != null && mp.isPlaying()) mp.pause(); } catch (Exception ignored) {}
-        handler.removeCallbacks(ticker);
+        cancelZeroPolling();
         saveProgress();
         releasePlayer();
         deactivateWatchersAndSession();
@@ -402,6 +422,82 @@ public class PlaybackService extends Service {
         sleepEndEpochMs = 0;
         sleepEndOfChapter = false;
         pause();
+    }
+
+    private void cancelZeroPolling() {
+        handler.removeCallbacks(chapterBoundaryTask);
+        handler.removeCallbacks(sleepTimerTask);
+        handler.removeCallbacks(backupSaveTask);
+    }
+
+    private void scheduleZeroPolling() {
+        handler.removeCallbacks(chapterBoundaryTask);
+        handler.removeCallbacks(sleepTimerTask);
+        if (!isPlaying() || currentBook == null) return;
+
+        BookModel.Chapter ch = currentBook.chapters.get(currentChapterIdx);
+        if (ch.durationMs > 0) {
+            long remAudioMs = Math.max(0, ch.durationMs - getChapterPosMs());
+            long wallMs = (long) (remAudioMs / Math.max(0.5f, speed));
+            long delay = (wallMs > 350L) ? (wallMs - 250L) : Math.max(50L, wallMs);
+            handler.postDelayed(chapterBoundaryTask, delay);
+        }
+
+        if (sleepEndEpochMs > 0) {
+            long left = sleepEndEpochMs - System.currentTimeMillis();
+            if (left <= 0) { sleepEndEpochMs = 0; pause(); }
+            else if (left <= 10_000L) {
+                float v = Math.max(0.1f, left / 10_000f);
+                if (mp != null) mp.setVolume(v, v);
+                handler.postDelayed(sleepTimerTask, Math.min(1000L, left));
+            } else {
+                handler.postDelayed(sleepTimerTask, left - 10_000L);
+            }
+        }
+    }
+
+    private void handleChapterBoundary() {
+        if (!isPlaying() || mp == null || currentBook == null) return;
+        BookModel.Chapter ch = currentBook.chapters.get(currentChapterIdx);
+        long chPos = getChapterPosMs();
+        if (ch.durationMs > 0 && chPos >= ch.durationMs - 350L) {
+            if (sleepEndOfChapter) {
+                sleepEndOfChapter = false;
+                if (currentChapterIdx + 1 < currentBook.chapters.size()) {
+                    currentChapterIdx++;
+                    pausedChapterPosMs = 0;
+                    saveProgress();
+                }
+                pause();
+                return;
+            }
+            if (currentChapterIdx + 1 < currentBook.chapters.size()) {
+                BookModel.Chapter next = currentBook.chapters.get(currentChapterIdx + 1);
+                if (next.filePath.equals(ch.filePath)) {
+                    currentChapterIdx++;
+                    saveProgress();
+                    promoteForeground();
+                    scheduleZeroPolling();
+                } else {
+                    handler.postDelayed(chapterBoundaryTask, 150L);
+                }
+                return;
+            }
+        }
+        scheduleZeroPolling();
+    }
+
+    private void handleSleepTimer() {
+        if (!isPlaying() || sleepEndEpochMs <= 0) return;
+        long left = sleepEndEpochMs - System.currentTimeMillis();
+        if (left <= 0) { sleepEndEpochMs = 0; pause(); }
+        else if (left <= 10_000L) {
+            float v = Math.max(0.1f, left / 10_000f);
+            if (mp != null) mp.setVolume(v, v);
+            handler.postDelayed(sleepTimerTask, Math.min(1000L, left));
+        } else {
+            handler.postDelayed(sleepTimerTask, left - 10_000L);
+        }
     }
 
     public void skipSeconds(int sec) {
@@ -426,6 +522,7 @@ public class PlaybackService extends Service {
         if (mp != null) mp.seekTo((int) (ch.startMs + pausedChapterPosMs));
         updatePlaybackState();
         saveProgress();
+        scheduleZeroPolling();
     }
 
     public long getChapterPosMs() {
@@ -446,6 +543,7 @@ public class PlaybackService extends Service {
         getSharedPreferences("wb_prefs", MODE_PRIVATE).edit().putFloat("speed", speed).apply();
         applySpeedInternal();
         updatePlaybackState();
+        scheduleZeroPolling();
     }
 
     private void applySpeedInternal() {
@@ -466,32 +564,14 @@ public class PlaybackService extends Service {
         else if (sleepEndEpochMs > 0 && (sleepEndEpochMs - now) <= 31 * 60_000L) sleepEndEpochMs = now + 45 * 60_000L;
         else if (sleepEndEpochMs > 0) { sleepEndEpochMs = 0; sleepEndOfChapter = true; }
         else { sleepEndEpochMs = 0; sleepEndOfChapter = false; }
+        if (sleepEndEpochMs == 0 && mp != null) mp.setVolume(1.0f, 1.0f);
+        scheduleZeroPolling();
     }
 
     public String getSleepLabel() {
         if (sleepEndOfChapter) return "Fine cap.";
         if (sleepEndEpochMs > 0) return Math.max(1, (sleepEndEpochMs - System.currentTimeMillis() + 59999) / 60000) + "m";
         return "Zzz";
-    }
-
-    private void checkChapterAndSleep() {
-        if (mp == null || currentBook == null) return;
-        BookModel.Chapter ch = currentBook.chapters.get(currentChapterIdx);
-        long filePos = mp.getCurrentPosition();
-        if (ch.durationMs > 0 && filePos >= ch.startMs + ch.durationMs - 250) {
-            if (sleepEndOfChapter) {
-                sleepEndOfChapter = false;
-                if (currentChapterIdx + 1 < currentBook.chapters.size()) { currentChapterIdx++; pausedChapterPosMs = 0; saveProgress(); }
-                pause();
-                return;
-            }
-            if (currentChapterIdx + 1 < currentBook.chapters.size()) { currentChapterIdx++; saveProgress(); promoteForeground(); }
-        }
-        if (sleepEndEpochMs > 0) {
-            long left = sleepEndEpochMs - System.currentTimeMillis();
-            if (left <= 0) { sleepEndEpochMs = 0; pause(); }
-            else if (left < 10_000L) { float v = Math.max(0.1f, left / 10_000f); mp.setVolume(v, v); }
-        }
     }
 
     public void saveProgress() {
