@@ -71,7 +71,8 @@ public class PlaybackService extends Service {
         @Override
         public void run() {
             if (isPlaying()) {
-                saveProgress();
+                StatsTracker.flush(this);
+        saveProgress();
                 handler.postDelayed(this, 180_000L);
             }
         }
@@ -104,6 +105,7 @@ public class PlaybackService extends Service {
             mediaSession.setCallback(new MediaSession.Callback() {
                 @Override public void onPlay() { resume(); }
                 @Override public void onPause() { pause(); }
+                @Override public void onStop() { pause(); }
                 @Override public void onSkipToNext() { skipSeconds(15); }
                 @Override public void onSkipToPrevious() { skipSeconds(-15); }
                 @Override public void onSeekTo(long pos) { seekChapterTo(pos); }
@@ -137,7 +139,8 @@ public class PlaybackService extends Service {
                         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
                         if (pm != null && pm.isPowerSaveMode() && isPlaying()) pause();
                     } else if (Intent.ACTION_SCREEN_ON.equals(act)) {
-                        if (isPlaying()) { saveProgress(); updatePlaybackState(); }
+                        if (isPlaying()) { StatsTracker.flush(this);
+        saveProgress(); updatePlaybackState(); }
                     }
                 }
             };
@@ -299,7 +302,8 @@ public class PlaybackService extends Service {
 
         try {
             if (mp == null || !ch.filePath.equals(loadedFilePath) || useBt != lastUsedBt) {
-                releasePlayer();
+                StatsTracker.onPauseOrStop(this);
+        releasePlayer();
                 mp = new MediaPlayer();
                 int usage = useBt ? AudioAttributes.USAGE_MEDIA : AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE;
                 mp.setAudioAttributes(new AudioAttributes.Builder()
@@ -322,11 +326,13 @@ public class PlaybackService extends Service {
                 requestAudioFocus();
                 promoteForeground();
                 mp.start();
+                StatsTracker.onPlayStart(this, book.id);
                 cancelZeroPolling();
                 scheduleZeroPolling();
                 handler.postDelayed(backupSaveTask, 180_000L);
             }
-            saveProgress();
+            StatsTracker.flush(this);
+        saveProgress();
         } catch (Exception ignored) {}
     }
 
@@ -362,7 +368,8 @@ public class PlaybackService extends Service {
             if (currentBook != null && currentChapterIdx + 1 < currentBook.chapters.size()) {
                 currentChapterIdx++;
                 pausedChapterPosMs = 0;
-                saveProgress();
+                StatsTracker.flush(this);
+        saveProgress();
             }
             pause();
             return;
@@ -390,6 +397,7 @@ public class PlaybackService extends Service {
             return;
         }
         if (!mp.isPlaying()) {
+            StatsTracker.onPlayStart(this, currentBook.id);
             int pos = Math.max(0, mp.getCurrentPosition() - 3000);
             BookModel.Chapter ch = currentBook.chapters.get(currentChapterIdx);
             if (pos < ch.startMs) pos = (int) ch.startMs;
@@ -401,6 +409,7 @@ public class PlaybackService extends Service {
             requestAudioFocus();
             promoteForeground();
             mp.start();
+                StatsTracker.onPlayStart(this, book.id);
             cancelZeroPolling();
             scheduleZeroPolling();
             handler.postDelayed(backupSaveTask, 180_000L);
@@ -411,7 +420,9 @@ public class PlaybackService extends Service {
         pausedChapterPosMs = getChapterPosMs();
         try { if (mp != null && mp.isPlaying()) mp.pause(); } catch (Exception ignored) {}
         cancelZeroPolling();
+        StatsTracker.flush(this);
         saveProgress();
+        StatsTracker.onPauseOrStop(this);
         releasePlayer();
         deactivateWatchersAndSession();
         stopForeground(true);
@@ -463,19 +474,23 @@ public class PlaybackService extends Service {
         if (ch.durationMs > 0 && chPos >= ch.durationMs - 350L) {
             if (sleepEndOfChapter) {
                 sleepEndOfChapter = false;
-                if (currentChapterIdx + 1 < currentBook.chapters.size()) {
+                StatsTracker.onChapterDone(this);
+        if (currentChapterIdx + 1 < currentBook.chapters.size()) {
                     currentChapterIdx++;
                     pausedChapterPosMs = 0;
-                    saveProgress();
+                    StatsTracker.flush(this);
+        saveProgress();
                 }
                 pause();
                 return;
             }
-            if (currentChapterIdx + 1 < currentBook.chapters.size()) {
+            StatsTracker.onChapterDone(this);
+        if (currentChapterIdx + 1 < currentBook.chapters.size()) {
                 BookModel.Chapter next = currentBook.chapters.get(currentChapterIdx + 1);
                 if (next.filePath.equals(ch.filePath)) {
                     currentChapterIdx++;
-                    saveProgress();
+                    StatsTracker.flush(this);
+        saveProgress();
                     promoteForeground();
                     scheduleZeroPolling();
                 } else {
@@ -521,6 +536,7 @@ public class PlaybackService extends Service {
         pausedChapterPosMs = Math.max(0, Math.min(chapPosMs, ch.durationMs));
         if (mp != null) mp.seekTo((int) (ch.startMs + pausedChapterPosMs));
         updatePlaybackState();
+        StatsTracker.flush(this);
         saveProgress();
         scheduleZeroPolling();
     }
@@ -593,8 +609,10 @@ public class PlaybackService extends Service {
 
     @Override
     public void onDestroy() {
+        StatsTracker.flush(this);
         saveProgress();
         handler.removeCallbacksAndMessages(null);
+        StatsTracker.onPauseOrStop(this);
         releasePlayer();
         deactivateWatchersAndSession();
         super.onDestroy();

@@ -172,6 +172,7 @@ public class MainActivity extends Activity {
     public void onBackPressed() {
         uiHandler.removeCallbacksAndMessages(null);
         if (screenMode == 2 && selectedBook != null) showChapters(selectedBook, false);
+        else if (screenMode == 3) showLibrary();
         else if (screenMode == 1) showLibrary();
         } else if (screenMode == 2 && svc != null) {
             showPlayer();
@@ -240,6 +241,13 @@ public class MainActivity extends Activity {
             startActivityForResult(pick, REQ_IMPORT);
         });
         hdr.addView(bAdd);
+
+        Button bStats = ui.chip("📊", "#111D2E", "#1A2E47", "#2563EB", "#60A5FA", 11f);
+        LinearLayout.LayoutParams stlp = new LinearLayout.LayoutParams(ui.dp(32), ui.dp(32));
+        stlp.leftMargin = ui.dp(5);
+        bStats.setLayoutParams(stlp);
+        bStats.setOnClickListener(v -> StatsView.show(this, library, 0));
+        hdr.addView(bStats);
 
         Button bOff = ui.chip("⏻", "#261214", "#3B181C", "#EF4444", "#FCA5A5", 11f);
         LinearLayout.LayoutParams olp = new LinearLayout.LayoutParams(ui.dp(32), ui.dp(32));
